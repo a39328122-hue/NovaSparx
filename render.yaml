@@ -10,10 +10,13 @@ services:
       - key: NOVASPARX_CACHE_DIR
         value: /tmp/novasparx-cache
       - key: NOVASPARX_MAX_VERTICES
-        value: "260000"
+        value: "320000"
       - key: NOVASPARX_MAX_INDICES
-        value: "780000"
+        value: "960000"
       - key: NOVASPARX_PARSE_CONCURRENCY
         value: "1"
       - key: NOVASPARX_ARCHIVE_REGISTER_CONCURRENCY
         value: "3"
+
+      - key: NOVASPARX_ONDEMAND_TIMEOUT_SECONDS
+        value: "80"
