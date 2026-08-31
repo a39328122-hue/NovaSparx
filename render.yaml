@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: novasparx-live
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NOVASPARX_CACHE_DIR
+        value: /tmp/novasparx-cache
+      - key: NOVASPARX_MAX_VERTICES
+        value: "260000"
+      - key: NOVASPARX_MAX_INDICES
+        value: "780000"
+      - key: NOVASPARX_PARSE_CONCURRENCY
+        value: "1"
+      - key: NOVASPARX_ARCHIVE_REGISTER_CONCURRENCY
+        value: "3"
