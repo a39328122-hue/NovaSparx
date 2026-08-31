@@ -1,32 +1,23 @@
 using System.Collections.Concurrent;
-using CUE4Parse.Encryption.Aes;
-using CUE4Parse.MappingsProvider.Usmap;
 using CUE4Parse.UE4.Assets.Exports;
 using CUE4Parse.UE4.Assets.Exports.Material;
+using CUE4Parse.UE4.Assets.Exports.Nanite;
 using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using CUE4Parse.UE4.IO;
-using CUE4Parse.UE4.Objects.Core.Misc;
 using CUE4Parse.UE4.Versions;
-using CUE4Parse_Conversion.Dto;
-using CUE4Parse_Conversion.Options;
+using CUE4Parse_Conversion.Meshes;
+using CUE4Parse_Conversion.Meshes.PSK;
 
 namespace NovaSparx.Backend;
 
 /// <summary>
-/// NovaSparx 0.3 Live service.
-///
-/// Design goals:
-/// - main Fortnite live manifest
-/// - optional Fortnite_Studio manifest
-/// - optional texture-streaming IoStore TOC
-/// - current mappings + AES
-/// - normal LOD fallback + Nanite fallback
-/// - low memory footprint for a free backend
+/// NovaSparx 0.3.1 Live service.
+/// Compile hotfix aligned to CUE4Parse/CUE4Parse-Conversion 1.2.2.202608.
 /// </summary>
 public sealed class LiveProviderService : IDisposable
 {
     public const string BackendVersion =
-        "0.3.0-hybrid-alpha";
+        "0.3.1-compile-hotfix";
 
     private readonly PublicFortniteSources _sources;
     private readonly ILogger<LiveProviderService> _log;
@@ -46,19 +37,15 @@ public sealed class LiveProviderService : IDisposable
                     : 1),
             2);
 
-    private readonly ConcurrentDictionary<
-        string,
-        CacheEntry> _previewCache =
-        new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, CacheEntry>
+        _previewCache =
+            new(StringComparer.OrdinalIgnoreCase);
 
     private NovaHybridFileProvider? _provider;
 
     private string? _manifestVersion;
     private string? _studioManifestVersion;
     private string? _lastError;
-
-    private ManifestRegistrationResult? _coreRegistration;
-    private ManifestRegistrationResult? _studioRegistration;
     private bool _textureStreamingTocRegistered;
 
     private sealed record CacheEntry(
@@ -82,34 +69,51 @@ public sealed class LiveProviderService : IDisposable
         _log = log;
     }
 
-    public bool IsReady => _provider is not null;
+    public bool IsReady =>
+        _provider is not null;
 
     public ProviderHealth Health()
     {
-        var provider = _provider;
+        var provider =
+            _provider;
 
         return new ProviderHealth(
-            Ok: provider is not null,
-            Service: "NovaSparx.Backend",
-            Version: BackendVersion,
-            ProviderReady: provider is not null,
+            Ok:
+                provider is not null,
+
+            Service:
+                "NovaSparx.Backend",
+
+            Version:
+                BackendVersion,
+
+            ProviderReady:
+                provider is not null,
+
             Mode:
                 "FortniteLive/NovaHybridFileProvider",
+
             ManifestVersion:
                 BuildManifestHealthString(),
+
             RegisteredArchives:
                 provider is null
                     ? 0
                     : provider.UnloadedVfs.Count +
                       provider.MountedVfs.Count,
+
             MountedArchives:
                 provider?.MountedVfs.Count ?? 0,
+
             IndexedFiles:
                 provider?.Files.Count ?? 0,
+
             RequiredKeys:
                 provider?.RequiredKeys.Count ?? 0,
+
             LoadedKeys:
                 provider?.Keys.Count ?? 0,
+
             LastError:
                 _lastError);
     }
@@ -119,20 +123,21 @@ public sealed class LiveProviderService : IDisposable
         if (_manifestVersion is null)
             return null;
 
-        var text =
+        var value =
             $"core={_manifestVersion}";
 
         if (!string.IsNullOrWhiteSpace(
-            _studioManifestVersion))
+                _studioManifestVersion))
         {
-            text +=
+            value +=
                 $";studio={_studioManifestVersion}";
         }
 
         if (_textureStreamingTocRegistered)
-            text += ";texture-streaming=on";
+            value +=
+                ";texture-streaming=on";
 
-        return text;
+        return value;
     }
 
     public async Task EnsureReadyAsync(
@@ -149,37 +154,50 @@ public sealed class LiveProviderService : IDisposable
             if (_provider is not null)
                 return;
 
-            _lastError = null;
+            _lastError =
+                null;
 
             var started =
                 DateTimeOffset.UtcNow;
 
+            NovaHybridFileProvider? provider =
+                null;
+
             try
             {
-                var (liveManifest, liveVersion) =
+                var (
+                    liveManifest,
+                    liveVersion) =
                     await _sources.GetLiveManifestAsync(
                         cancellationToken);
 
                 _manifestVersion =
                     liveVersion;
 
-                // FortnitePorting's current Live path has moved to UE6 game versioning.
-                // This was one of the important differences from NovaSparx 0.2.
                 var versions =
                     new VersionContainer(
                         EGame.GAME_UE6_0);
 
-                var provider =
+                provider =
                     new NovaHybridFileProvider(
                         new DirectoryInfo(
                             _sources.TocCache),
                         versions)
                     {
-                        LoadOnDemandTocs = true,
-                        ReadNaniteData = true,
-                        ReadShaderMaps = false,
-                        ReadScriptData = false,
-                        UseLazyPackageSerialization = true
+                        LoadOnDemandTocs =
+                            true,
+
+                        ReadNaniteData =
+                            true,
+
+                        ReadShaderMaps =
+                            false,
+
+                        ReadScriptData =
+                            false,
+
+                        UseLazyPackageSerialization =
+                            true
                     };
 
                 provider.OnDemandOptions =
@@ -202,19 +220,20 @@ public sealed class LiveProviderService : IDisposable
                                     Environment.GetEnvironmentVariable(
                                         "NOVASPARX_ONDEMAND_TIMEOUT_SECONDS"),
                                     out var timeout)
-                                    ? Math.Clamp(timeout, 10, 180)
+                                    ? Math.Clamp(
+                                        timeout,
+                                        10,
+                                        180)
                                     : 80)
                     };
 
-                // 1) Main live Fortnite archives.
-                _coreRegistration =
-                    await provider.RegisterManifestAsync(
-                        liveManifest,
-                        "Fortnite",
-                        cancellationToken);
+                // Core Fortnite BuildPatch archives.
+                await provider.RegisterManifestAsync(
+                    liveManifest,
+                    "Fortnite",
+                    cancellationToken);
 
-                // 2) Fortnite_Studio / UEFN manifest.
-                // This increases plugin/GameFeature coverage when Dilly exposes it.
+                // Optional Fortnite_Studio manifest for UEFN/GameFeature coverage.
                 try
                 {
                     var studio =
@@ -225,28 +244,26 @@ public sealed class LiveProviderService : IDisposable
                     {
                         var (
                             studioManifest,
-                            studioVersion) = studio.Value;
+                            studioVersion) =
+                                studio.Value;
 
                         _studioManifestVersion =
                             studioVersion;
 
-                        _studioRegistration =
-                            await provider.RegisterManifestAsync(
-                                studioManifest,
-                                "Fortnite_Studio",
-                                cancellationToken);
+                        await provider.RegisterManifestAsync(
+                            studioManifest,
+                            "Fortnite_Studio",
+                            cancellationToken);
                     }
                 }
                 catch (Exception ex)
                 {
                     _log.LogWarning(
                         ex,
-                        "Fortnite_Studio manifest registration failed. " +
-                        "Core Fortnite will continue.");
+                        "Fortnite_Studio manifest registration failed. Core Fortnite will continue.");
                 }
 
-                // 3) Texture streaming TOC from Cloud/IoStoreOnDemand.ini.
-                // This is especially important for high-quality material/texture previews.
+                // Optional streamed-texture IoStore TOC.
                 try
                 {
                     var externalToc =
@@ -269,13 +286,12 @@ public sealed class LiveProviderService : IDisposable
                 {
                     _log.LogWarning(
                         ex,
-                        "Texture-streaming TOC registration failed. " +
-                        "Mesh geometry can still work.");
+                        "Texture-streaming TOC registration failed. Geometry can still work.");
                 }
 
                 provider.Initialize();
 
-                // Mappings before object parsing.
+                // Current Fortnite USMAP mappings.
                 try
                 {
                     var mappings =
@@ -283,8 +299,10 @@ public sealed class LiveProviderService : IDisposable
                             cancellationToken);
 
                     if (mappings is not null)
+                    {
                         provider.MappingsContainer =
                             mappings;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -293,7 +311,7 @@ public sealed class LiveProviderService : IDisposable
                         "Mappings source failed.");
                 }
 
-                // Submit public/current keys.
+                // Current Fortnite AES keys.
                 try
                 {
                     var keys =
@@ -314,11 +332,9 @@ public sealed class LiveProviderService : IDisposable
                 {
                     _log.LogWarning(
                         ex,
-                        "AES source failed. " +
-                        "Unencrypted archives can still mount.");
+                        "AES source failed. Unencrypted archives can still mount.");
                 }
 
-                // Mount remaining unencrypted/now-unlocked archives.
                 try
                 {
                     await provider.MountAsync();
@@ -330,7 +346,6 @@ public sealed class LiveProviderService : IDisposable
                         "One or more archives failed to mount.");
                 }
 
-                // Resolve plugin virtual paths after the archive set is mounted.
                 try
                 {
                     provider.LoadVirtualPaths();
@@ -356,6 +371,9 @@ public sealed class LiveProviderService : IDisposable
                 _provider =
                     provider;
 
+                provider =
+                    null;
+
                 var elapsed =
                     DateTimeOffset.UtcNow -
                     started;
@@ -368,20 +386,19 @@ public sealed class LiveProviderService : IDisposable
                     _manifestVersion,
                     _studioManifestVersion ?? "none",
                     _textureStreamingTocRegistered,
-                    provider.UnloadedVfs.Count +
-                    provider.MountedVfs.Count,
-                    provider.MountedVfs.Count,
-                    provider.Files.Count,
-                    provider.Keys.Count,
-                    provider.RequiredKeys.Count);
+                    _provider.UnloadedVfs.Count +
+                    _provider.MountedVfs.Count,
+                    _provider.MountedVfs.Count,
+                    _provider.Files.Count,
+                    _provider.Keys.Count,
+                    _provider.RequiredKeys.Count);
             }
             catch (Exception ex)
             {
                 _lastError =
                     ex.Message;
 
-                _provider?.Dispose();
-                _provider = null;
+                provider?.Dispose();
 
                 _log.LogError(
                     ex,
@@ -439,8 +456,11 @@ public sealed class LiveProviderService : IDisposable
                 throw new InvalidOperationException(
                     "NovaSparx provider is not ready.");
 
-            UObject? loaded = null;
-            string? resolved = null;
+            UObject? loaded =
+                null;
+
+            string? resolved =
+                null;
 
             foreach (var candidate in
                      AssetPathResolver.LoadCandidates(
@@ -501,222 +521,296 @@ public sealed class LiveProviderService : IDisposable
             string canonical,
             string resolved)
     {
-        // All normal LODs first, Nanite last.
-        // The HTTP preview picks the highest quality layer that fits the mobile budget.
-        using var dto =
-            new StaticMeshDto(
-                mesh,
-                EMeshQuality.All,
-                ENaniteMeshFormat.NaniteLast);
-
-        if (dto.LODs.Count == 0)
+        // Use the exact mesh-conversion API shipped by CUE4Parse-Conversion 1.2.2.202608.
+        // The matching release API is MeshConverter.TryConvert + CStaticMesh/CStaticMeshLod.
+        //
+        // AllLayersNaniteLast = normal LODs first, Nanite fallback last.
+        if (!mesh.TryConvert(
+                out CStaticMesh converted,
+                ENaniteMeshFormat.AllLayersNaniteLast))
         {
             throw new InvalidOperationException(
-                "StaticMesh contains no renderable normal or Nanite LOD.");
+                "CUE4Parse could not convert this StaticMesh.");
         }
 
-        var maxVertices =
-            int.TryParse(
-                Environment.GetEnvironmentVariable(
-                    "NOVASPARX_MAX_VERTICES"),
-                out var parsedVertices)
-                ? Math.Clamp(
-                    parsedVertices,
-                    10_000,
-                    700_000)
-                : 320_000;
-
-        var maxIndices =
-            int.TryParse(
-                Environment.GetEnvironmentVariable(
-                    "NOVASPARX_MAX_INDICES"),
-                out var parsedIndices)
-                ? Math.Clamp(
-                    parsedIndices,
-                    30_000,
-                    2_100_000)
-                : 960_000;
-
-        // StaticMeshDto preserves quality order.
-        // Prefer the first (highest-quality) LOD that fits.
-        var chosen =
-            dto.LODs.FirstOrDefault(
-                lod =>
-                    lod.Vertices.Length <=
-                    maxVertices &&
-                    lod.Indices.Length <=
-                    maxIndices);
-
-        // If all layers are large, choose the smallest layer only if it still fits.
-        chosen ??=
-            dto.LODs
-                .OrderBy(lod =>
-                    lod.Vertices.Length)
-                .ThenBy(lod =>
-                    lod.Indices.Length)
-                .First();
-
-        if (chosen.Vertices.Length >
-                maxVertices ||
-            chosen.Indices.Length >
-                maxIndices)
+        using (converted)
         {
-            throw new InvalidOperationException(
-                "The smallest available StaticMesh layer is still larger than " +
-                $"the NovaSparx HTTP preview budget " +
-                $"({chosen.Vertices.Length:N0} vertices / " +
-                $"{chosen.Indices.Length:N0} indices).");
-        }
+            if (converted.LODs.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "StaticMesh contains no renderable normal or Nanite LOD.");
+            }
 
-        var vertexCount =
-            chosen.Vertices.Length;
+            var maxVertices =
+                int.TryParse(
+                    Environment.GetEnvironmentVariable(
+                        "NOVASPARX_MAX_VERTICES"),
+                    out var parsedVertices)
+                    ? Math.Clamp(
+                        parsedVertices,
+                        10_000,
+                        700_000)
+                    : 320_000;
 
-        var positions =
-            new float[vertexCount * 3];
+            var maxIndices =
+                int.TryParse(
+                    Environment.GetEnvironmentVariable(
+                        "NOVASPARX_MAX_INDICES"),
+                    out var parsedIndices)
+                    ? Math.Clamp(
+                        parsedIndices,
+                        30_000,
+                        2_100_000)
+                    : 960_000;
 
-        var normals =
-            new float[vertexCount * 3];
+            var candidates =
+                new List<(
+                    CStaticMeshLod Lod,
+                    int Index,
+                    int VertexCount,
+                    int IndexCount)>();
 
-        var tangents =
-            new float[vertexCount * 4];
+            for (var index = 0;
+                 index < converted.LODs.Count;
+                 index++)
+            {
+                var lod =
+                    converted.LODs[index];
 
-        var uv0 =
-            new float[vertexCount * 2];
+                if (lod is null ||
+                    lod.Verts is null ||
+                    lod.Verts.Length == 0 ||
+                    lod.Indices is null)
+                {
+                    continue;
+                }
 
-        for (var index = 0;
-             index < vertexCount;
-             index++)
-        {
-            var vertex =
-                chosen.Vertices[index];
+                try
+                {
+                    var indexCount =
+                        lod.Indices.Value.Length;
 
-            positions[index * 3 + 0] =
-                (float)vertex.Position.X;
+                    if (indexCount < 3)
+                        continue;
 
-            positions[index * 3 + 1] =
-                (float)vertex.Position.Y;
+                    candidates.Add(
+                        (
+                            lod,
+                            index,
+                            lod.Verts.Length,
+                            indexCount
+                        ));
+                }
+                catch (Exception ex)
+                {
+                    _log.LogDebug(
+                        ex,
+                        "Failed to materialize StaticMesh LOD {LodIndex}.",
+                        index);
+                }
+            }
 
-            positions[index * 3 + 2] =
-                (float)vertex.Position.Z;
+            if (candidates.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "StaticMesh conversion produced no usable geometry.");
+            }
 
-            normals[index * 3 + 0] =
-                (float)vertex.Normal.X;
+            var selected =
+                candidates.FirstOrDefault(
+                    candidate =>
+                        candidate.VertexCount <= maxVertices &&
+                        candidate.IndexCount <= maxIndices);
 
-            normals[index * 3 + 1] =
-                (float)vertex.Normal.Y;
+            if (selected.Lod is null)
+            {
+                selected =
+                    candidates
+                        .OrderBy(
+                            candidate =>
+                                candidate.VertexCount)
+                        .ThenBy(
+                            candidate =>
+                                candidate.IndexCount)
+                        .First();
+            }
 
-            normals[index * 3 + 2] =
-                (float)vertex.Normal.Z;
+            if (selected.VertexCount > maxVertices ||
+                selected.IndexCount > maxIndices)
+            {
+                throw new InvalidOperationException(
+                    "The smallest available StaticMesh layer is still larger than " +
+                    $"the NovaSparx HTTP preview budget " +
+                    $"({selected.VertexCount:N0} vertices / " +
+                    $"{selected.IndexCount:N0} indices).");
+            }
 
-            tangents[index * 4 + 0] =
-                (float)vertex.Tangent.X;
+            var chosen =
+                selected.Lod;
 
-            tangents[index * 4 + 1] =
-                (float)vertex.Tangent.Y;
+            var vertices =
+                chosen.Verts!;
 
-            tangents[index * 4 + 2] =
-                (float)vertex.Tangent.Z;
+            var indices =
+                chosen.Indices!.Value;
 
-            tangents[index * 4 + 3] =
-                (float)vertex.Tangent.W;
+            var rawSections =
+                chosen.Sections?.Value ??
+                Array.Empty<CMeshSection>();
 
-            uv0[index * 2 + 0] =
-                vertex.Uv.U;
+            var vertexCount =
+                vertices.Length;
 
-            uv0[index * 2 + 1] =
-                vertex.Uv.V;
-        }
+            var positions =
+                new float[vertexCount * 3];
 
-        float[]? colors = null;
+            var normals =
+                new float[vertexCount * 3];
 
-        var colorSet =
-            chosen.VertexColors?
-                .FirstOrDefault();
-
-        if (colorSet is not null &&
-            colorSet.Value.Colors.Length ==
-            vertexCount)
-        {
-            colors =
+            var tangents =
                 new float[vertexCount * 4];
+
+            var uv0 =
+                new float[vertexCount * 2];
 
             for (var index = 0;
                  index < vertexCount;
                  index++)
             {
-                var color =
-                    colorSet.Value.Colors[index];
+                var vertex =
+                    vertices[index];
 
-                colors[index * 4 + 0] =
-                    color.R / 255f;
+                positions[index * 3 + 0] =
+                    (float)vertex.Position.X;
 
-                colors[index * 4 + 1] =
-                    color.G / 255f;
+                positions[index * 3 + 1] =
+                    (float)vertex.Position.Y;
 
-                colors[index * 4 + 2] =
-                    color.B / 255f;
+                positions[index * 3 + 2] =
+                    (float)vertex.Position.Z;
 
-                colors[index * 4 + 3] =
-                    color.A / 255f;
+                normals[index * 3 + 0] =
+                    (float)vertex.Normal.X;
+
+                normals[index * 3 + 1] =
+                    (float)vertex.Normal.Y;
+
+                normals[index * 3 + 2] =
+                    (float)vertex.Normal.Z;
+
+                tangents[index * 4 + 0] =
+                    (float)vertex.Tangent.X;
+
+                tangents[index * 4 + 1] =
+                    (float)vertex.Tangent.Y;
+
+                tangents[index * 4 + 2] =
+                    (float)vertex.Tangent.Z;
+
+                tangents[index * 4 + 3] =
+                    (float)vertex.Tangent.W;
+
+                uv0[index * 2 + 0] =
+                    vertex.UV.U;
+
+                uv0[index * 2 + 1] =
+                    vertex.UV.V;
             }
-        }
 
-        var sections =
-            chosen.Sections
-                .Select(section =>
+            float[]? colors =
+                null;
+
+            if (chosen.VertexColors is
+                    { Length: > 0 } vertexColors &&
+                vertexColors.Length ==
+                    vertexCount)
+            {
+                colors =
+                    new float[vertexCount * 4];
+
+                for (var index = 0;
+                     index < vertexCount;
+                     index++)
                 {
-                    var material =
-                        dto.GetMaterial(section);
+                    var color =
+                        vertexColors[index];
 
-                    return new PreviewSection(
-                        FirstIndex:
-                            section.FirstIndex,
+                    colors[index * 4 + 0] =
+                        color.R / 255f;
 
-                        IndexCount:
-                            checked(
-                                section.NumFaces *
-                                3),
+                    colors[index * 4 + 1] =
+                        color.G / 255f;
 
-                        MaterialIndex:
-                            Math.Max(
-                                0,
-                                section.MaterialIndex),
+                    colors[index * 4 + 2] =
+                        color.B / 255f;
 
-                        Name:
-                            material?.SlotName ??
-                            $"Material_{section.MaterialIndex}");
-                })
-                .ToArray();
+                    colors[index * 4 + 3] =
+                        color.A / 255f;
+                }
+            }
 
-        var materials =
-            dto.Materials
-                .Select(material =>
+            var validMaterialIndices =
+                rawSections
+                    .Where(
+                        section =>
+                            section.MaterialIndex >= 0)
+                    .Select(
+                        section =>
+                            section.MaterialIndex)
+                    .ToArray();
+
+            var materialCount =
+                validMaterialIndices.Length == 0
+                    ? 1
+                    : Math.Min(
+                        validMaterialIndices.Max() + 1,
+                        32);
+
+            var materials =
+                new PreviewMaterial[materialCount];
+
+            for (var materialIndex = 0;
+                 materialIndex < materialCount;
+                 materialIndex++)
+            {
+                var section =
+                    rawSections.FirstOrDefault(
+                        candidate =>
+                            candidate.MaterialIndex ==
+                            materialIndex);
+
+                var name =
+                    section?.MaterialName ??
+                    $"Material_{materialIndex}";
+
+                string? materialPath =
+                    null;
+
+                try
                 {
-                    string? path = null;
-
-                    try
+                    if (section?.Material?
+                            .Load<UMaterialInterface>() is
+                        { } loadedMaterial)
                     {
-                        if (material.Material?
-                                .TryLoad<UMaterialInterface>(
-                                    out var loadedMaterial) ==
-                            true)
-                        {
-                            path =
-                                loadedMaterial
-                                    .GetPathName();
-                        }
+                        materialPath =
+                            loadedMaterial.GetPathName();
                     }
-                    catch
-                    {
-                        // Material path enrichment is optional.
-                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.LogDebug(
+                        ex,
+                        "Could not resolve material slot {MaterialIndex}.",
+                        materialIndex);
+                }
 
-                    return new PreviewMaterial(
+                materials[materialIndex] =
+                    new PreviewMaterial(
                         Name:
-                            material.SlotName,
+                            name,
 
                         Path:
-                            path,
+                            materialPath,
 
                         BaseColor:
                             [1f, 1f, 1f, 1f],
@@ -729,122 +823,128 @@ public sealed class LiveProviderService : IDisposable
 
                         TwoSided:
                             chosen.IsTwoSided);
-                })
-                .ToArray();
+            }
 
-        if (materials.Length == 0)
-        {
-            materials =
-            [
-                new PreviewMaterial(
-                    "FallbackMaterial",
-                    null,
-                    [0.72f, 0.75f, 0.80f, 1f],
-                    0.68f,
-                    0f,
-                    chosen.IsTwoSided)
-            ];
+            var sections =
+                rawSections
+                    .Where(
+                        section =>
+                            section.FirstIndex >= 0 &&
+                            section.NumFaces > 0)
+                    .Select(
+                        section =>
+                        {
+                            var materialIndex =
+                                section.MaterialIndex < 0
+                                    ? 0
+                                    : Math.Clamp(
+                                        section.MaterialIndex,
+                                        0,
+                                        materials.Length - 1);
+
+                            return new PreviewSection(
+                                FirstIndex:
+                                    section.FirstIndex,
+
+                                IndexCount:
+                                    checked(
+                                        section.NumFaces *
+                                        3),
+
+                                MaterialIndex:
+                                    materialIndex,
+
+                                Name:
+                                    section.MaterialName ??
+                                    materials[materialIndex].Name);
+                        })
+                    .ToArray();
+
+            if (sections.Length == 0)
+            {
+                sections =
+                [
+                    new PreviewSection(
+                        0,
+                        indices.Length,
+                        0,
+                        materials[0].Name)
+                ];
+            }
+
+            var geometry =
+                new PreviewGeometry(
+                    Positions:
+                        positions,
+
+                    Indices:
+                        indices,
+
+                    Normals:
+                        normals,
+
+                    Tangents:
+                        tangents,
+
+                    Uv0:
+                        uv0,
+
+                    Colors:
+                        colors);
+
+            var lodIndex =
+                chosen.IsNanite
+                    ? -1
+                    : selected.Index;
+
+            var manifest =
+                new PreviewManifest(
+                    Path:
+                        canonical,
+
+                    Lod:
+                        lodIndex,
+
+                    IsNanite:
+                        chosen.IsNanite,
+
+                    Geometry:
+                        geometry,
+
+                    Sections:
+                        sections,
+
+                    Materials:
+                        materials);
+
+            return new ResolveEnvelope(
+                State:
+                    "ready",
+
+                Source:
+                    _textureStreamingTocRegistered
+                        ? "novasparx-hybrid-live+texture-streaming"
+                        : "novasparx-hybrid-live",
+
+                ResolvedPath:
+                    resolved,
+
+                AssetType:
+                    "StaticMesh",
+
+                Schema:
+                    "novasparx.preview.v1",
+
+                Version:
+                    BackendVersion,
+
+                ManifestVersion:
+                    BuildManifestHealthString() ??
+                    "unknown",
+
+                Manifest:
+                    manifest);
         }
-
-        if (sections.Length == 0)
-        {
-            sections =
-            [
-                new PreviewSection(
-                    0,
-                    chosen.Indices.Length,
-                    0,
-                    materials[0].Name)
-            ];
-        }
-
-        // Clamp corrupt/invalid material slot indices.
-        sections =
-            sections
-                .Select(section =>
-                    section with
-                    {
-                        MaterialIndex =
-                            Math.Clamp(
-                                section.MaterialIndex,
-                                0,
-                                materials.Length - 1)
-                    })
-                .ToArray();
-
-        var geometry =
-            new PreviewGeometry(
-                Positions:
-                    positions,
-
-                Indices:
-                    chosen.Indices,
-
-                Normals:
-                    normals,
-
-                Tangents:
-                    tangents,
-
-                Uv0:
-                    uv0,
-
-                Colors:
-                    colors);
-
-        var lodIndex =
-            chosen.IsNanite
-                ? -1
-                : checked(
-                    (int)chosen.SourceLodIndex);
-
-        var manifest =
-            new PreviewManifest(
-                Path:
-                    canonical,
-
-                Lod:
-                    lodIndex,
-
-                IsNanite:
-                    chosen.IsNanite,
-
-                Geometry:
-                    geometry,
-
-                Sections:
-                    sections,
-
-                Materials:
-                    materials);
-
-        return new ResolveEnvelope(
-            State:
-                "ready",
-
-            Source:
-                _textureStreamingTocRegistered
-                    ? "novasparx-hybrid-live+texture-streaming"
-                    : "novasparx-hybrid-live",
-
-            ResolvedPath:
-                resolved,
-
-            AssetType:
-                "StaticMesh",
-
-            Schema:
-                "novasparx.preview.v1",
-
-            Version:
-                BackendVersion,
-
-            ManifestVersion:
-                BuildManifestHealthString() ??
-                "unknown",
-
-            Manifest:
-                manifest);
     }
 
     private void TrimPreviewCacheIfNeeded()
@@ -854,17 +954,21 @@ public sealed class LiveProviderService : IDisposable
 
         var oldest =
             _previewCache
-                .OrderBy(pair =>
-                    pair.Value.CreatedAt)
+                .OrderBy(
+                    pair =>
+                        pair.Value.CreatedAt)
                 .Take(75)
-                .Select(pair =>
-                    pair.Key)
+                .Select(
+                    pair =>
+                        pair.Key)
                 .ToArray();
 
         foreach (var key in oldest)
+        {
             _previewCache.TryRemove(
                 key,
                 out _);
+        }
     }
 
     public async Task RefreshAsync(
@@ -878,14 +982,17 @@ public sealed class LiveProviderService : IDisposable
             _previewCache.Clear();
 
             _provider?.Dispose();
-            _provider = null;
+            _provider =
+                null;
 
-            _manifestVersion = null;
-            _studioManifestVersion = null;
-            _lastError = null;
+            _manifestVersion =
+                null;
 
-            _coreRegistration = null;
-            _studioRegistration = null;
+            _studioManifestVersion =
+                null;
+
+            _lastError =
+                null;
 
             _textureStreamingTocRegistered =
                 false;
