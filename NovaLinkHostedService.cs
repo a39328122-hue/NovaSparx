@@ -241,6 +241,13 @@ public sealed class NovaLinkHostedService : BackgroundService
                     .Trim()
                     .ToLowerInvariant();
 
+            if (type == "hello")
+            {
+                // AutoLink sends one negotiated hello immediately after the
+                // WebSocket upgrade. It is informational, not an RPC request.
+                continue;
+            }
+
             if (type == "ping")
             {
                 await SendControlAsync(
