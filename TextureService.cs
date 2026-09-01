@@ -223,10 +223,6 @@ public sealed class TextureService
 
                 throw;
             }
-            finally
-            {
-                decoded?.Dispose();
-            }
         }
         finally
         {
