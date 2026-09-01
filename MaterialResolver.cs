@@ -26,7 +26,7 @@ public static class MaterialResolver
         material.GetParams(semantic);
         material.GetParams(
             rich,
-            EMaterialDepth.AllLayersNoRef);
+            EMaterialFormat.AllLayersNoRef);
 
         var baseMaterial = FindBaseMaterial(material);
 
@@ -41,9 +41,6 @@ public static class MaterialResolver
         var emissive = semantic.Emissive;
         var opacity = semantic.Opacity;
 
-        // CMaterialParams is intentionally semantic and is the first choice.
-        // CMaterialParams2 is used as a deterministic fallback when the richer
-        // parameter table has evidence that the semantic pass did not select.
         diffuse ??= FindTexture(
             rich,
             "basecolor",
@@ -298,7 +295,7 @@ public static class MaterialResolver
         var rich = new CMaterialParams2();
         material.GetParams(
             rich,
-            EMaterialDepth.AllLayersNoRef);
+            EMaterialFormat.AllLayersNoRef);
 
         foreach (var pair in rich.Textures)
             Add($"texture-param:{pair.Key}", pair.Value);
@@ -448,7 +445,6 @@ public static class MaterialResolver
             .Replace("-", string.Empty)
             .ToUpperInvariant();
 
-        // Occlusion / Roughness / Metallic
         if (
             value.Contains("ORM") ||
             value.Contains("OCCLUSIONROUGHNESSMETALLIC") ||
@@ -460,7 +456,6 @@ public static class MaterialResolver
                 Metallic: 2);
         }
 
-        // Metallic / Roughness / Ambient Occlusion.
         if (
             value.Contains("MRAO") ||
             value.Contains("MRA") ||
@@ -472,7 +467,6 @@ public static class MaterialResolver
                 Metallic: 0);
         }
 
-        // Roughness / Metallic / Ambient Occlusion.
         if (
             value.Contains("RMAO") ||
             value.Contains("ROUGHNESSMETALLICAO"))
