@@ -132,9 +132,6 @@ public sealed class TextureService
 
             try
             {
-                // Decode the largest mib that is at or below the HTTP/browser
-                // preview budget. This avoids decoding an 8K/16K source just to
-                // display a small preview on a phone.
                 decoded =
                     texture.Decode(
                         MaxMipSize,
@@ -142,9 +139,6 @@ public sealed class TextureService
 
                 if (decoded is null)
                 {
-                    // Some assets have unusual mip metadata. Fall back to the
-                    // first decodable mip rather than pretending the texture
-                    // does not exist.
                     decoded =
                         texture.Decode(
                             ETexturePlatform.DesktopMobile);
@@ -160,8 +154,7 @@ public sealed class TextureService
                     decoded.Encode(
                         ETextureFormat.Png,
                         false,
-                        out var extension,
-                        100);
+                        out var extension);
 
                 if (!extension.Equals(
                         "png",
