@@ -552,7 +552,7 @@ app.MapGet(
 
         using var timeout =
             RequestTimeout(
-                cancellation,
+                cancellationToken,
                 TimeSpan.FromSeconds(90));
 
         try
