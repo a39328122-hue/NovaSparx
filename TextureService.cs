@@ -159,9 +159,9 @@ public sealed class TextureService
                 var png =
                     decoded.Encode(
                         ETextureFormat.Png,
-                        saveHdrAsHdr: false,
+                        false,
                         out var extension,
-                        quality: 100);
+                        100);
 
                 if (!extension.Equals(
                         "png",
