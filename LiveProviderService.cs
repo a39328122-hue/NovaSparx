@@ -11,19 +11,29 @@ using CUE4Parse_Conversion.Meshes.PSK;
 namespace NovaSparx.Backend;
 
 /// <summary>
-/// NovaSparx 0.3.1 Live service.
-/// Compile hotfix aligned to CUE4Parse/CUE4Parse-Conversion 1.2.2.202608.
+/// NovaSparx 1.0 live Fortnite provider.
+///
+/// Responsibilities:
+/// - latest Fortnite core manifest
+/// - Fortnite_Studio manifest
+/// - streamed texture OnDemand TOC
+/// - mappings + AES
+/// - mount / virtual paths / post mount
+/// - deterministic asset loading
+/// - StaticMesh geometry
+/// - real material evidence through MaterialResolver
+/// - compact asset inspection
+///
+/// Heavy texture decoding is intentionally kept in TextureService.
 /// </summary>
 public sealed class LiveProviderService : IDisposable
 {
-    public const string BackendVersion =
-        "0.3.1-compile-hotfix";
+    public const string BackendVersion = "1.0.0";
 
     private readonly PublicFortniteSources _sources;
     private readonly ILogger<LiveProviderService> _log;
 
-    private readonly SemaphoreSlim _initGate =
-        new(1, 1);
+    private readonly SemaphoreSlim _initGate = new(1, 1);
 
     private readonly SemaphoreSlim _parseGate =
         new(
@@ -52,6 +62,10 @@ public sealed class LiveProviderService : IDisposable
         DateTimeOffset CreatedAt,
         ResolveEnvelope Value);
 
+    private sealed record LoadedAsset(
+        UObject Object,
+        string ResolvedPath);
+
     private static readonly TimeSpan CacheTtl =
         TimeSpan.FromMinutes(
             int.TryParse(
@@ -74,8 +88,7 @@ public sealed class LiveProviderService : IDisposable
 
     public ProviderHealth Health()
     {
-        var provider =
-            _provider;
+        var provider = _provider;
 
         return new ProviderHealth(
             Ok:
@@ -115,7 +128,13 @@ public sealed class LiveProviderService : IDisposable
                 provider?.Keys.Count ?? 0,
 
             LastError:
-                _lastError);
+                _lastError,
+
+            TextureStreamingReady:
+                _textureStreamingTocRegistered,
+
+            PreviewCacheEntries:
+                _previewCache.Count);
     }
 
     private string? BuildManifestHealthString()
@@ -134,8 +153,7 @@ public sealed class LiveProviderService : IDisposable
         }
 
         if (_textureStreamingTocRegistered)
-            value +=
-                ";texture-streaming=on";
+            value += ";texture-streaming=on";
 
         return value;
     }
@@ -154,8 +172,7 @@ public sealed class LiveProviderService : IDisposable
             if (_provider is not null)
                 return;
 
-            _lastError =
-                null;
+            _lastError = null;
 
             var started =
                 DateTimeOffset.UtcNow;
@@ -227,13 +244,13 @@ public sealed class LiveProviderService : IDisposable
                                     : 80)
                     };
 
-                // Core Fortnite BuildPatch archives.
+                // Core Fortnite manifest.
                 await provider.RegisterManifestAsync(
                     liveManifest,
                     "Fortnite",
                     cancellationToken);
 
-                // Optional Fortnite_Studio manifest for UEFN/GameFeature coverage.
+                // Fortnite_Studio extends coverage for UEFN and GameFeatures.
                 try
                 {
                     var studio =
@@ -263,7 +280,7 @@ public sealed class LiveProviderService : IDisposable
                         "Fortnite_Studio manifest registration failed. Core Fortnite will continue.");
                 }
 
-                // Optional streamed-texture IoStore TOC.
+                // Streamed texture IoStore TOC.
                 try
                 {
                     var externalToc =
@@ -379,7 +396,7 @@ public sealed class LiveProviderService : IDisposable
                     started;
 
                 _log.LogInformation(
-                    "NovaSparx Hybrid ready in {Seconds:F1}s | " +
+                    "NovaSparx 1.0 ready in {Seconds:F1}s | " +
                     "core={CoreVersion} studio={StudioVersion} textureToc={TextureToc} | " +
                     "archives={Archives} mounted={Mounted} files={Files} keys={Keys}/{RequiredKeys}",
                     elapsed.TotalSeconds,
@@ -402,7 +419,7 @@ public sealed class LiveProviderService : IDisposable
 
                 _log.LogError(
                     ex,
-                    "NovaSparx Hybrid initialization failed.");
+                    "NovaSparx live initialization failed.");
 
                 throw;
             }
@@ -410,6 +427,41 @@ public sealed class LiveProviderService : IDisposable
         finally
         {
             _initGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Loads an asset using the mount-aware candidate list.
+    /// This method is also the common entry point used by TextureService.
+    /// </summary>
+    public async Task<(UObject Object, string ResolvedPath)?>
+        LoadObjectAsync(
+            string rawPath,
+            CancellationToken cancellationToken)
+    {
+        await EnsureReadyAsync(
+            cancellationToken);
+
+        await _parseGate.WaitAsync(
+            cancellationToken);
+
+        try
+        {
+            var loaded =
+                LoadObjectNoLock(
+                    rawPath,
+                    cancellationToken);
+
+            if (loaded is null)
+                return null;
+
+            return (
+                loaded.Object,
+                loaded.ResolvedPath);
+        }
+        finally
+        {
+            _parseGate.Release();
         }
     }
 
@@ -451,54 +503,19 @@ public sealed class LiveProviderService : IDisposable
                 return cached.Value;
             }
 
-            var provider =
-                _provider ??
-                throw new InvalidOperationException(
-                    "NovaSparx provider is not ready.");
+            var loaded =
+                LoadObjectNoLock(
+                    rawPath,
+                    cancellationToken);
 
-            UObject? loaded =
-                null;
-
-            string? resolved =
-                null;
-
-            foreach (var candidate in
-                     AssetPathResolver.LoadCandidates(
-                         rawPath))
-            {
-                cancellationToken
-                    .ThrowIfCancellationRequested();
-
-                try
-                {
-                    loaded =
-                        provider.SafeLoadPackageObject(
-                            candidate);
-
-                    if (loaded is not null)
-                    {
-                        resolved =
-                            candidate;
-                        break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.LogDebug(
-                        ex,
-                        "Asset candidate failed: {Candidate}",
-                        candidate);
-                }
-            }
-
-            if (loaded is not UStaticMesh mesh)
+            if (loaded?.Object is not UStaticMesh mesh)
                 return null;
 
             var envelope =
                 BuildStaticMeshEnvelope(
                     mesh,
                     canonical,
-                    resolved ?? canonical);
+                    loaded.ResolvedPath);
 
             TrimPreviewCacheIfNeeded();
 
@@ -515,16 +532,240 @@ public sealed class LiveProviderService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns compact deterministic information about any loadable asset.
+    /// No raw UObject graph is serialized to the public API.
+    /// </summary>
+    public async Task<AssetInspection?>
+        InspectAsync(
+            string rawPath,
+            CancellationToken cancellationToken)
+    {
+        await EnsureReadyAsync(
+            cancellationToken);
+
+        var canonical =
+            AssetPathResolver.Canonicalize(
+                rawPath);
+
+        if (canonical.Length == 0)
+            return null;
+
+        await _parseGate.WaitAsync(
+            cancellationToken);
+
+        try
+        {
+            var loaded =
+                LoadObjectNoLock(
+                    rawPath,
+                    cancellationToken);
+
+            if (loaded is null)
+                return null;
+
+            var facts =
+                new Dictionary<string, object?>(
+                    StringComparer.OrdinalIgnoreCase);
+
+            PreviewMaterial? material =
+                null;
+
+            PreviewMaterial[] materials =
+                [];
+
+            AssetReference[] references =
+                [];
+
+            string fidelity =
+                "unknown";
+
+            string assetType =
+                FriendlyAssetType(
+                    loaded.Object);
+
+            if (loaded.Object is UUnrealMaterial unrealMaterial)
+            {
+                try
+                {
+                    material =
+                        MaterialResolver.Resolve(
+                            unrealMaterial);
+
+                    materials =
+                        [material];
+
+                    references =
+                        MaterialResolver.CollectReferences(
+                            unrealMaterial);
+
+                    fidelity =
+                        material.Fidelity;
+
+                    facts["opacityMode"] =
+                        material.OpacityMode;
+
+                    facts["twoSided"] =
+                        material.TwoSided;
+
+                    facts["roughness"] =
+                        material.Roughness;
+
+                    facts["metallic"] =
+                        material.Metallic;
+
+                    facts["specular"] =
+                        material.Specular;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogDebug(
+                        ex,
+                        "Material inspection failed for {Path}.",
+                        canonical);
+                }
+            }
+            else if (loaded.Object is UStaticMesh mesh)
+            {
+                try
+                {
+                    var envelope =
+                        BuildStaticMeshEnvelope(
+                            mesh,
+                            canonical,
+                            loaded.ResolvedPath);
+
+                    materials =
+                        envelope.Manifest.Materials;
+
+                    references =
+                        envelope.Manifest.References ??
+                        [];
+
+                    fidelity =
+                        envelope.Manifest.MaterialFidelity;
+
+                    facts["lod"] =
+                        envelope.Manifest.Lod;
+
+                    facts["nanite"] =
+                        envelope.Manifest.IsNanite;
+
+                    facts["vertices"] =
+                        envelope.Manifest.Geometry.Positions.Length /
+                        3;
+
+                    facts["triangles"] =
+                        envelope.Manifest.Geometry.Indices.Length /
+                        3;
+
+                    facts["sections"] =
+                        envelope.Manifest.Sections.Length;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogDebug(
+                        ex,
+                        "StaticMesh inspection geometry/material pass failed for {Path}.",
+                        canonical);
+                }
+            }
+
+            facts["runtimeType"] =
+                loaded.Object.GetType().Name;
+
+            return new AssetInspection(
+                State:
+                    "ready",
+
+                Path:
+                    canonical,
+
+                ResolvedPath:
+                    loaded.ResolvedPath,
+
+                AssetType:
+                    assetType,
+
+                Source:
+                    _textureStreamingTocRegistered
+                        ? "novasparx-hybrid-live+texture-streaming"
+                        : "novasparx-hybrid-live",
+
+                MaterialFidelity:
+                    fidelity,
+
+                Material:
+                    material,
+
+                Materials:
+                    materials,
+
+                References:
+                    references,
+
+                Facts:
+                    facts);
+        }
+        finally
+        {
+            _parseGate.Release();
+        }
+    }
+
+    private LoadedAsset? LoadObjectNoLock(
+        string rawPath,
+        CancellationToken cancellationToken)
+    {
+        var provider =
+            _provider ??
+            throw new InvalidOperationException(
+                "NovaSparx provider is not ready.");
+
+        foreach (var candidate in
+                 AssetPathResolver.LoadCandidates(
+                     rawPath))
+        {
+            cancellationToken
+                .ThrowIfCancellationRequested();
+
+            try
+            {
+                var loaded =
+                    provider.SafeLoadPackageObject(
+                        candidate);
+
+                if (loaded is not null)
+                {
+                    return new LoadedAsset(
+                        Object:
+                            loaded,
+
+                        ResolvedPath:
+                            candidate);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogDebug(
+                    ex,
+                    "Asset candidate failed: {Candidate}",
+                    candidate);
+            }
+        }
+
+        return null;
+    }
+
     private ResolveEnvelope
         BuildStaticMeshEnvelope(
             UStaticMesh mesh,
             string canonical,
             string resolved)
     {
-        // Use the exact mesh-conversion API shipped by CUE4Parse-Conversion 1.2.2.202608.
-        // The matching release API is MeshConverter.TryConvert + CStaticMesh/CStaticMeshLod.
-        //
-        // AllLayersNaniteLast = normal LODs first, Nanite fallback last.
+        // Keep the conversion API already verified against the repository's
+        // pinned CUE4Parse-Conversion package:
+        // 1.2.2.202608.
         if (!mesh.TryConvert(
                 out CStaticMesh converted,
                 ENaniteMeshFormat.AllLayersNaniteLast))
@@ -640,7 +881,7 @@ public sealed class LiveProviderService : IDisposable
             {
                 throw new InvalidOperationException(
                     "The smallest available StaticMesh layer is still larger than " +
-                    $"the NovaSparx HTTP preview budget " +
+                    $"the NovaSparx preview budget " +
                     $"({selected.VertexCount:N0} vertices / " +
                     $"{selected.IndexCount:N0} indices).");
             }
@@ -764,10 +1005,30 @@ public sealed class LiveProviderService : IDisposable
                     ? 1
                     : Math.Min(
                         validMaterialIndices.Max() + 1,
-                        32);
+                        64);
 
             var materials =
                 new PreviewMaterial[materialCount];
+
+            var referenceList =
+                new List<AssetReference>();
+
+            var referenceSet =
+                new HashSet<string>(
+                    StringComparer.OrdinalIgnoreCase);
+
+            void AddReferences(
+                IEnumerable<AssetReference> source)
+            {
+                foreach (var reference in source)
+                {
+                    var key =
+                        $"{reference.Kind}|{reference.Path}";
+
+                    if (referenceSet.Add(key))
+                        referenceList.Add(reference);
+                }
+            }
 
             for (var materialIndex = 0;
                  materialIndex < materialCount;
@@ -783,7 +1044,7 @@ public sealed class LiveProviderService : IDisposable
                     section?.MaterialName ??
                     $"Material_{materialIndex}";
 
-                string? materialPath =
+                PreviewMaterial? previewMaterial =
                     null;
 
                 try
@@ -792,25 +1053,32 @@ public sealed class LiveProviderService : IDisposable
                             .Load<UMaterialInterface>() is
                         { } loadedMaterial)
                     {
-                        materialPath =
-                            loadedMaterial.GetPathName();
+                        previewMaterial =
+                            MaterialResolver.Resolve(
+                                loadedMaterial,
+                                name);
+
+                        AddReferences(
+                            MaterialResolver.CollectReferences(
+                                loadedMaterial));
                     }
                 }
                 catch (Exception ex)
                 {
                     _log.LogDebug(
                         ex,
-                        "Could not resolve material slot {MaterialIndex}.",
+                        "Could not fully resolve material slot {MaterialIndex}.",
                         materialIndex);
                 }
 
                 materials[materialIndex] =
+                    previewMaterial ??
                     new PreviewMaterial(
                         Name:
                             name,
 
                         Path:
-                            materialPath,
+                            null,
 
                         BaseColor:
                             [1f, 1f, 1f, 1f],
@@ -822,7 +1090,13 @@ public sealed class LiveProviderService : IDisposable
                             0f,
 
                         TwoSided:
-                            chosen.IsTwoSided);
+                            chosen.IsTwoSided,
+
+                        Fidelity:
+                            "unknown",
+
+                        Evidence:
+                            "material-slot-loaded-without-resolved-material-evidence");
             }
 
             var sections =
@@ -897,6 +1171,10 @@ public sealed class LiveProviderService : IDisposable
                     ? -1
                     : selected.Index;
 
+            var materialFidelity =
+                AggregateMaterialFidelity(
+                    materials);
+
             var manifest =
                 new PreviewManifest(
                     Path:
@@ -915,7 +1193,13 @@ public sealed class LiveProviderService : IDisposable
                         sections,
 
                     Materials:
-                        materials);
+                        materials,
+
+                    MaterialFidelity:
+                        materialFidelity,
+
+                    References:
+                        referenceList.ToArray());
 
             return new ResolveEnvelope(
                 State:
@@ -945,6 +1229,57 @@ public sealed class LiveProviderService : IDisposable
                 Manifest:
                     manifest);
         }
+    }
+
+    private static string AggregateMaterialFidelity(
+        IEnumerable<PreviewMaterial> materials)
+    {
+        var best = 0;
+
+        foreach (var material in materials)
+        {
+            var score =
+                material.Fidelity.ToLowerInvariant() switch
+                {
+                    "high" => 4,
+                    "medium" => 3,
+                    "partial" => 2,
+                    "low" => 1,
+                    _ => 0
+                };
+
+            best =
+                Math.Max(
+                    best,
+                    score);
+        }
+
+        return best switch
+        {
+            4 => "high",
+            3 => "medium",
+            2 => "partial",
+            1 => "low",
+            _ => "unknown"
+        };
+    }
+
+    private static string FriendlyAssetType(
+        UObject value)
+    {
+        return value switch
+        {
+            UStaticMesh => "StaticMesh",
+            UMaterialInstanceConstant => "MaterialInstanceConstant",
+            UMaterialInstance => "MaterialInstance",
+            UMaterial => "Material",
+            UMaterialInterface => "MaterialInterface",
+            UUnrealMaterial => "Material",
+            _ => value.GetType().Name.StartsWith(
+                    'U')
+                ? value.GetType().Name[1..]
+                : value.GetType().Name
+        };
     }
 
     private void TrimPreviewCacheIfNeeded()
