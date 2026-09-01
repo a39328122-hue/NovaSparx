@@ -3,20 +3,13 @@ using System.Text.Json;
 namespace NovaSparx.Backend;
 
 /// <summary>
-/// Shared NovaSparx request dispatcher.
-///
-/// The normal ASP.NET HTTP routes can exist independently, while NovaLink uses
-/// this class to execute the exact same backend operations through the reverse
-/// WebSocket tunnel.
-///
-/// Transport is intentionally not handled here:
-/// - JSON responses are UTF-8 bytes.
-/// - texture responses are raw PNG bytes.
-/// - NovaLink decides how those bytes are framed/chunked over WebSocket.
+/// One execution path for both direct HTTP requests and NovaLink requests.
 /// </summary>
 public sealed class NovaRequestDispatcher
 {
     private readonly LiveProviderService _provider;
+    private readonly MeshResolverService _meshes;
+    private readonly AssetInspectorService _inspector;
     private readonly TextureService _textures;
     private readonly ILogger<NovaRequestDispatcher> _log;
 
@@ -29,10 +22,14 @@ public sealed class NovaRequestDispatcher
 
     public NovaRequestDispatcher(
         LiveProviderService provider,
+        MeshResolverService meshes,
+        AssetInspectorService inspector,
         TextureService textures,
         ILogger<NovaRequestDispatcher> log)
     {
         _provider = provider;
+        _meshes = meshes;
+        _inspector = inspector;
         _textures = textures;
         _log = log;
     }
@@ -55,7 +52,8 @@ public sealed class NovaRequestDispatcher
         {
             return (method, path) switch
             {
-                ("GET", "/health") =>
+                ("GET", "/health") or
+                ("GET", "/v1/health") =>
                     Json(
                         200,
                         BuildHealth()),
@@ -160,9 +158,16 @@ public sealed class NovaRequestDispatcher
             health.LoadedKeys,
             health.LastError,
             health.TextureStreamingReady,
-            health.PreviewCacheEntries,
+            providerPreviewCacheEntries =
+                health.PreviewCacheEntries,
+            meshCacheEntries =
+                _meshes.CacheEntries,
             textureCacheEntries =
-                _textures.CacheEntries
+                _textures.CacheEntries,
+            universalMeshPreview = true,
+            staticMesh = true,
+            skeletalMesh = true,
+            inspector = "universal-uobject-metadata-v1"
         };
     }
 
@@ -179,7 +184,7 @@ public sealed class NovaRequestDispatcher
 
         return Json(
             200,
-            _provider.Health());
+            BuildHealth());
     }
 
     private async Task<DispatchResponse> RefreshAsync(
@@ -191,13 +196,14 @@ public sealed class NovaRequestDispatcher
                 TimeSpan.FromMinutes(3));
 
         _textures.ClearCache();
+        _meshes.ClearCache();
 
         await _provider.RefreshAsync(
             timeout.Token);
 
         return Json(
             200,
-            _provider.Health());
+            BuildHealth());
     }
 
     private async Task<DispatchResponse> ResolveAsync(
@@ -210,7 +216,7 @@ public sealed class NovaRequestDispatcher
                 TimeSpan.FromMinutes(2));
 
         var resolved =
-            await _provider.ResolveAsync(
+            await _meshes.ResolveAsync(
                 rawPath,
                 timeout.Token);
 
@@ -222,7 +228,7 @@ public sealed class NovaRequestDispatcher
                 {
                     state = "missing",
                     error =
-                        "NovaSparx could not resolve this path as a renderable StaticMesh.",
+                        "NovaSparx could not resolve this path as a renderable StaticMesh or SkeletalMesh.",
                     path =
                         AssetPathResolver.Canonicalize(
                             rawPath)
@@ -244,7 +250,7 @@ public sealed class NovaRequestDispatcher
                 TimeSpan.FromSeconds(90));
 
         var inspection =
-            await _provider.InspectAsync(
+            await _inspector.InspectAsync(
                 rawPath,
                 timeout.Token);
 
@@ -278,7 +284,7 @@ public sealed class NovaRequestDispatcher
                 TimeSpan.FromSeconds(90));
 
         var inspection =
-            await _provider.InspectAsync(
+            await _inspector.InspectAsync(
                 rawPath,
                 timeout.Token);
 
@@ -309,7 +315,9 @@ public sealed class NovaRequestDispatcher
                 assetType =
                     inspection.AssetType,
                 references =
-                    inspection.References
+                    inspection.References,
+                count =
+                    inspection.References.Length
             });
     }
 
