@@ -13,5 +13,13 @@
     <PackageReference Include="CUE4Parse" Version="1.2.2.202608" />
     <PackageReference Include="CUE4Parse-Conversion" Version="1.2.2.202608" />
     <PackageReference Include="EpicManifestParser" Version="3.0.0-preview.1" />
+
+    <!--
+      CUE4Parse-Conversion uses SkiaSharp for texture encoding.
+      The managed SkiaSharp package is pulled transitively, but Linux needs the
+      native runtime asset as well. Back4App/Docker is Linux, so keep this
+      explicit to make TextureService PNG encoding work reliably.
+    -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.9" />
   </ItemGroup>
 </Project>
