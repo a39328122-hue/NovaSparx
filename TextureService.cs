@@ -132,7 +132,7 @@ public sealed class TextureService
 
             try
             {
-                // Decode the largest mip that is at or below the HTTP/browser
+                // Decode the largest mib that is at or below the HTTP/browser
                 // preview budget. This avoids decoding an 8K/16K source just to
                 // display a small preview on a phone.
                 decoded =
