@@ -2,7 +2,6 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 
 WORKDIR /src
 
-# Restore first so Docker can reuse the NuGet layer when only source files change.
 COPY NovaSparx.Backend.csproj ./
 RUN dotnet restore ./NovaSparx.Backend.csproj
 
@@ -22,7 +21,8 @@ WORKDIR /app
 COPY --from=build /out/ /app/
 COPY start.sh /app/start.sh
 
-RUN chmod +x /app/start.sh \
+RUN sed -i 's/\r$//' /app/start.sh \
+    && chmod 755 /app/start.sh \
     && mkdir -p /tmp/novasparx-cache
 
 ENV ASPNETCORE_ENVIRONMENT=Production
