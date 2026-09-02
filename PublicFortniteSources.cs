@@ -470,8 +470,17 @@ public sealed partial class PublicFortniteSources
                         }
                     }
 
-                    if (key is "id" or "manifestid" or "manifest_id")
-                        id ??= value;
+                    if (key is "manifestid" or "manifest_id")
+                    {
+                        id = value;
+                    }
+                    else if (
+                        key == "id" &&
+                        string.IsNullOrWhiteSpace(id))
+                    {
+                        id = value;
+                    }
+
                 }
                 else if (
                     property.Value.ValueKind ==
