@@ -45,6 +45,69 @@ public sealed partial class PublicFortniteSources
     public string MappingsCache => Path.Combine(_cacheRoot, "mappings");
     public string TocCache => Path.Combine(_cacheRoot, "uondemandtoc");
 
+    private static string NormalizeHttpEndpoint(
+        string? raw,
+        string fallback,
+        bool ensureTrailingSlash = false)
+    {
+        static Uri? Parse(string? value)
+        {
+            var clean = value?.Trim().Trim('"');
+
+            if (!Uri.TryCreate(
+                    clean,
+                    UriKind.Absolute,
+                    out var uri) ||
+                uri.Scheme is not ("http" or "https"))
+            {
+                return null;
+            }
+
+            return uri;
+        }
+
+        var endpoint =
+            Parse(raw) ??
+            Parse(fallback) ??
+            throw new InvalidOperationException(
+                "NovaSparx endpoint configuration is not a valid HTTP URL.");
+
+        var output = endpoint.ToString();
+
+        return ensureTrailingSlash
+            ? output.TrimEnd('/') + "/"
+            : output;
+    }
+
+    private static string RequireHttpEndpoint(
+        string raw)
+    {
+        var clean = raw.Trim().Trim('"');
+
+        if (!Uri.TryCreate(
+                clean,
+                UriKind.Absolute,
+                out var uri) ||
+            uri.Scheme is not ("http" or "https"))
+        {
+            throw new InvalidOperationException(
+                "NovaSparx received an invalid manifest URL.");
+        }
+
+        return uri.ToString();
+    }
+
+    public Uri GetOnDemandHostUri()
+    {
+        return new Uri(
+            NormalizeHttpEndpoint(
+                Environment.GetEnvironmentVariable(
+                    "NOVASPARX_ONDEMAND_HOST"),
+                "https://egdownload.fastly-edge.com/",
+                ensureTrailingSlash: true),
+            UriKind.Absolute);
+    }
+
     public ManifestParseOptions CreateManifestOptions()
     {
         return new ManifestParseOptions
@@ -52,8 +115,11 @@ public sealed partial class PublicFortniteSources
             ChunkCacheDirectory = ChunkCache,
             ManifestCacheDirectory = ManifestCache,
             ChunkBaseUrl =
-                Environment.GetEnvironmentVariable("NOVASPARX_CHUNK_BASE_URL") ??
-                "https://egdownload.fastly-edge.com/Builds/Fortnite/CloudDir/",
+                NormalizeHttpEndpoint(
+                    Environment.GetEnvironmentVariable(
+                        "NOVASPARX_CHUNK_BASE_URL"),
+                    "https://egdownload.fastly-edge.com/Builds/Fortnite/CloudDir/",
+                    ensureTrailingSlash: true),
             Client = _http,
 
             // Match the current Fortnite tooling pattern: BuildPatch chunks stay cached
@@ -70,17 +136,87 @@ public sealed partial class PublicFortniteSources
             Environment.GetEnvironmentVariable("NOVASPARX_MANIFEST_URL");
 
         if (!string.IsNullOrWhiteSpace(direct))
-            return await DownloadManifestFromAnyEndpoint(
-                direct,
-                cancellationToken);
+        {
+            try
+            {
+                return await DownloadManifestFromAnyEndpoint(
+                    RequireHttpEndpoint(direct),
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(
+                    ex,
+                    "Configured manifest URL failed; public sources will be tried.");
+            }
+        }
 
-        var api =
-            Environment.GetEnvironmentVariable("NOVASPARX_MANIFEST_API") ??
-            "https://api.fortniteapi.com/v1/manifests";
+        // Dilly currently exposes the raw BuildPatch .manifest download URL.
+        // The legacy FortniteAPI endpoint is kept as a fallback because it can
+        // still supply metadata even when it no longer includes raw bytes.
+        var endpoints =
+            new List<string>();
 
-        return await DownloadManifestFromAnyEndpoint(
-            api,
-            cancellationToken);
+        var configuredApi =
+            Environment.GetEnvironmentVariable(
+                "NOVASPARX_MANIFEST_API");
+
+        if (!string.IsNullOrWhiteSpace(configuredApi))
+        {
+            try
+            {
+                endpoints.Add(
+                    RequireHttpEndpoint(configuredApi));
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(
+                    ex,
+                    "Configured manifest API is invalid; public sources will be tried.");
+            }
+        }
+
+        endpoints.Add(
+            "https://export-service-new.dillyapis.com/v1/manifests");
+
+        endpoints.Add(
+            "https://api.fortniteapi.com/v1/manifests");
+
+        Exception? lastError = null;
+
+        foreach (var endpoint in
+                 endpoints.Distinct(
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                return await DownloadManifestFromAnyEndpoint(
+                    endpoint,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+
+                _log.LogWarning(
+                    ex,
+                    "Fortnite manifest source failed: {Endpoint}",
+                    endpoint);
+            }
+        }
+
+        throw new InvalidOperationException(
+            "NovaSparx could not obtain current Fortnite manifest bytes from " +
+            "any configured public source.",
+            lastError);
     }
 
     /// <summary>
@@ -92,8 +228,10 @@ public sealed partial class PublicFortniteSources
         GetStudioManifestAsync(CancellationToken cancellationToken)
     {
         var endpoint =
-            Environment.GetEnvironmentVariable("NOVASPARX_STUDIO_MANIFEST_API") ??
-            "https://export-service-new.dillyapis.com/v1/manifests";
+            NormalizeHttpEndpoint(
+                Environment.GetEnvironmentVariable(
+                    "NOVASPARX_STUDIO_MANIFEST_API"),
+                "https://export-service-new.dillyapis.com/v1/manifests");
 
         try
         {
@@ -168,6 +306,10 @@ public sealed partial class PublicFortniteSources
             return await DownloadManifestFromAnyEndpoint(
                 downloadUrl,
                 cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -270,11 +412,40 @@ public sealed partial class PublicFortniteSources
         }
     }
 
-    private async Task<(FBuildPatchAppManifest Manifest, string Version)>
+    private Task<(FBuildPatchAppManifest Manifest, string Version)>
         DownloadManifestFromAnyEndpoint(
             string url,
             CancellationToken cancellationToken)
     {
+        return DownloadManifestFromAnyEndpoint(
+            url,
+            cancellationToken,
+            new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase),
+            depth: 0);
+    }
+
+    private async Task<(FBuildPatchAppManifest Manifest, string Version)>
+        DownloadManifestFromAnyEndpoint(
+            string url,
+            CancellationToken cancellationToken,
+            HashSet<string> visited,
+            int depth)
+    {
+        if (depth > 5)
+        {
+            throw new InvalidOperationException(
+                "Manifest endpoint recursion limit was reached.");
+        }
+
+        url = RequireHttpEndpoint(url);
+
+        if (!visited.Add(url))
+        {
+            throw new InvalidOperationException(
+                "Manifest endpoint loop was detected.");
+        }
+
         using var response =
             await _http.GetAsync(url, cancellationToken);
 
@@ -311,27 +482,15 @@ public sealed partial class PublicFortniteSources
             {
                 try
                 {
-                    using var nested =
-                        await _http.GetAsync(
-                            candidate.Url,
-                            cancellationToken);
-
-                    if (!nested.IsSuccessStatusCode)
-                        continue;
-
-                    var nestedBytes =
-                        await nested.Content.ReadAsByteArrayAsync(
-                            cancellationToken);
-
-                    if (!LooksLikeManifest(nestedBytes))
-                        continue;
-
-                    var manifest =
-                        FBuildPatchAppManifest.Deserialize(
-                            nestedBytes,
-                            CreateManifestOptions());
-
-                    return (manifest, ReadVersion(manifest));
+                    return await DownloadManifestFromAnyEndpoint(
+                        candidate.Url,
+                        cancellationToken,
+                        visited,
+                        depth + 1);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -342,7 +501,11 @@ public sealed partial class PublicFortniteSources
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(candidate.Id))
+            if (!string.IsNullOrWhiteSpace(candidate.Id) &&
+                depth < 5 &&
+                !url.EndsWith(
+                    ".manifest",
+                    StringComparison.OrdinalIgnoreCase))
             {
                 var detail =
                     url.TrimEnd('/') + "/" +
@@ -352,7 +515,13 @@ public sealed partial class PublicFortniteSources
                 {
                     return await DownloadManifestFromAnyEndpoint(
                         detail,
-                        cancellationToken);
+                        cancellationToken,
+                        visited,
+                        depth + 1);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
