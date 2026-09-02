@@ -77,16 +77,60 @@ var app =
 static bool Authorized(
     HttpRequest request)
 {
-    var expected =
-        Environment.GetEnvironmentVariable(
-            "NOVASPARX_BACKEND_TOKEN");
+    // NOVASPARX_SHARED_TOKEN is the canonical one-time secret for the edge,
+    // direct backend and AutoLink. The older route-specific names and explicit
+    // PREVIOUS values remain valid so a secret can be rotated without downtime.
+    var configured =
+        new[]
+        {
+            "NOVASPARX_SHARED_TOKEN",
+            "NOVASPARX_BACKEND_TOKEN",
+            "NOVASPARX_LINK_TOKEN",
+            "NOVASPARX_SHARED_TOKEN_PREVIOUS",
+            "NOVASPARX_BACKEND_TOKEN_PREVIOUS",
+            "NOVASPARX_LINK_TOKEN_PREVIOUS"
+        };
+
+    var expectedTokens =
+        new List<string>();
+
+    foreach (var name in configured)
+    {
+        var token =
+            Environment.GetEnvironmentVariable(
+                name)?
+                .Trim();
+
+        if (string.IsNullOrWhiteSpace(
+                token))
+        {
+            continue;
+        }
+
+        var duplicate = false;
+
+        foreach (var existing in expectedTokens)
+        {
+            if (string.Equals(
+                    existing,
+                    token,
+                    StringComparison.Ordinal))
+            {
+                duplicate = true;
+                break;
+            }
+        }
+
+        if (!duplicate)
+        {
+            expectedTokens.Add(
+                token);
+        }
+    }
 
     // Public /health stays unauthenticated, but every /v1 direct operation is
-    // closed unless a backend token is explicitly configured. AutoLink does
-    // not use these HTTP routes, so the reverse tunnel keeps working even when
-    // direct fallback is disabled.
-    if (string.IsNullOrWhiteSpace(
-            expected))
+    // closed unless at least one private token is explicitly configured.
+    if (expectedTokens.Count == 0)
     {
         return false;
     }
@@ -101,31 +145,39 @@ static bool Authorized(
 
     if (!authorization.StartsWith(
             prefix,
-            StringComparison.Ordinal))
+            StringComparison.OrdinalIgnoreCase))
     {
         return false;
     }
 
     var supplied =
         authorization[
-            prefix.Length..];
-
-    var expectedBytes =
-        Encoding.UTF8
-            .GetBytes(expected);
+            prefix.Length..]
+            .Trim();
 
     var suppliedBytes =
         Encoding.UTF8
             .GetBytes(supplied);
 
-    return (
-        expectedBytes.Length ==
-        suppliedBytes.Length &&
-        CryptographicOperations
-            .FixedTimeEquals(
-                expectedBytes,
-                suppliedBytes)
-    );
+    foreach (var expected in expectedTokens)
+    {
+        var expectedBytes =
+            Encoding.UTF8
+                .GetBytes(expected);
+
+        if (
+            expectedBytes.Length ==
+                suppliedBytes.Length &&
+            CryptographicOperations
+                .FixedTimeEquals(
+                    expectedBytes,
+                    suppliedBytes))
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static Dictionary<string, string>
