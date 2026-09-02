@@ -28,7 +28,7 @@ namespace NovaSparx.Backend;
 /// </summary>
 public sealed class LiveProviderService : IDisposable
 {
-    public const string BackendVersion = "1.0.0";
+    public const string BackendVersion = "1.0.2";
 
     private readonly PublicFortniteSources _sources;
     private readonly ILogger<LiveProviderService> _log;
@@ -221,11 +221,7 @@ public sealed class LiveProviderService : IDisposable
                     new IoStoreOnDemandOptions
                     {
                         ChunkHostUri =
-                            new Uri(
-                                Environment.GetEnvironmentVariable(
-                                    "NOVASPARX_ONDEMAND_HOST") ??
-                                "https://egdownload.fastly-edge.com/",
-                                UriKind.Absolute),
+                            _sources.GetOnDemandHostUri(),
 
                         ChunkCacheDirectory =
                             new DirectoryInfo(
