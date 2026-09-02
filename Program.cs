@@ -48,7 +48,11 @@ builder.Services
     .AddSingleton<NovaRequestDispatcher>();
 
 builder.Services
+    .AddHostedService<NovaWarmupHostedService>();
+
+builder.Services
     .AddHostedService<NovaLinkHostedService>();
+
 
 builder.WebHost
     .ConfigureKestrel(
