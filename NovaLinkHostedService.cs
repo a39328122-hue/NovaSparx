@@ -12,7 +12,8 @@ namespace NovaSparx.Backend;
 ///
 /// Environment:
 ///   NOVASPARX_LINK_URL   = wss://.../connect
-///   NOVASPARX_LINK_TOKEN = shared secret used only in request headers
+///   NOVASPARX_SHARED_TOKEN = canonical shared secret (recommended)
+///   NOVASPARX_LINK_TOKEN = legacy route-specific shared secret
 ///
 /// Protocol:
 ///   Worker -> Nova:
@@ -87,14 +88,13 @@ public sealed class NovaLinkHostedService : BackgroundService
             return;
         }
 
-        var token =
-            Environment.GetEnvironmentVariable(
-                "NOVASPARX_LINK_TOKEN");
+        var tokens =
+            ReadLinkTokens();
 
-        if (string.IsNullOrWhiteSpace(token))
+        if (tokens.Count == 0)
         {
             _log.LogError(
-                "NovaLink disabled: NOVASPARX_LINK_TOKEN is not configured.");
+                "NovaLink disabled: NOVASPARX_SHARED_TOKEN or NOVASPARX_LINK_TOKEN is not configured.");
 
             return;
         }
@@ -106,7 +106,10 @@ public sealed class NovaLinkHostedService : BackgroundService
             try
             {
                 using var socket =
-                    CreateSocket(token);
+                    CreateSocket(
+                        tokens[
+                            reconnectAttempt %
+                            tokens.Count]);
 
                 _log.LogInformation(
                     "NovaLink connecting to {Host}.",
@@ -188,6 +191,54 @@ public sealed class NovaLinkHostedService : BackgroundService
             LiveProviderService.BackendVersion);
 
         return socket;
+    }
+
+    private static List<string> ReadLinkTokens()
+    {
+        var output =
+            new List<string>();
+
+        foreach (var name in new[]
+        {
+            "NOVASPARX_SHARED_TOKEN",
+            "NOVASPARX_LINK_TOKEN",
+            "NOVASPARX_SHARED_TOKEN_PREVIOUS",
+            "NOVASPARX_LINK_TOKEN_PREVIOUS"
+        })
+        {
+            var token =
+                Environment.GetEnvironmentVariable(
+                    name)?
+                    .Trim();
+
+            if (string.IsNullOrWhiteSpace(
+                    token))
+            {
+                continue;
+            }
+
+            var duplicate = false;
+
+            foreach (var existing in output)
+            {
+                if (string.Equals(
+                        existing,
+                        token,
+                        StringComparison.Ordinal))
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (!duplicate)
+            {
+                output.Add(
+                    token);
+            }
+        }
+
+        return output;
     }
 
     private async Task RunConnectedAsync(
