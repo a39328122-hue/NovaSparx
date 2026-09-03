@@ -45,6 +45,9 @@ builder.Services
     .AddSingleton<TextureService>();
 
 builder.Services
+    .AddSingleton<PreviewResolverService>();
+
+builder.Services
     .AddSingleton<NovaRequestDispatcher>();
 
 builder.Services
@@ -316,6 +319,7 @@ app.MapGet(
                         "/v1/warmup",
                         "/v1/refresh",
                         "/v1/resolve?path=...",
+                        "/v1/preview?path=...",
                         "/v1/inspect?path=...",
                         "/v1/references?path=...",
                         "/v1/texture?path=..."
@@ -389,6 +393,19 @@ app.MapGet(
             cancellationToken));
 
 app.MapGet(
+    "/v1/preview",
+    (
+        HttpContext context,
+        NovaRequestDispatcher dispatcher,
+        CancellationToken cancellationToken) =>
+        DispatchHttpAsync(
+            context,
+            dispatcher,
+            "/v1/preview",
+            requireAuth: true,
+            cancellationToken));
+
+app.MapGet(
     "/v1/inspect",
     (
         HttpContext context,
@@ -428,3 +445,4 @@ app.MapGet(
             cancellationToken));
 
 app.Run();
+
