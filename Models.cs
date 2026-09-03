@@ -172,6 +172,30 @@ public sealed record TexturePayload(
 );
 
 /// <summary>
+/// Universal visual handoff for FNAA's final preview layer.
+///
+/// A mesh plan contains CUE4Parse geometry for the browser PNG renderer. A
+/// texture plan points at a texture already verified and cached by
+/// TextureService. Metadata is still returned when the asset has no honest
+/// visual representation, allowing FNAA to produce a clearly labelled
+/// evidence card instead of an empty panel.
+/// </summary>
+public sealed record UniversalPreviewPlan(
+    string State,
+    string Kind,
+    string RequestedPath,
+    string PreviewPath,
+    string AssetType,
+    string Source,
+    string Evidence,
+    ResolveEnvelope? Mesh,
+    AssetInspection? Inspection,
+    AssetReference[] AttemptedReferences,
+    int TextureWidth = 0,
+    int TextureHeight = 0
+);
+
+/// <summary>
 /// Internal transport response used by the direct HTTP API and by NovaLink.
 /// Keeping one response model prevents the reverse tunnel and local endpoints
 /// from drifting into different contracts.
@@ -181,3 +205,4 @@ public sealed record DispatchResponse(
     string ContentType,
     byte[] Body
 );
+
