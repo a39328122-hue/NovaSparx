@@ -11,6 +11,7 @@ public sealed class NovaRequestDispatcher
     private readonly MeshResolverService _meshes;
     private readonly AssetInspectorService _inspector;
     private readonly TextureService _textures;
+    private readonly PreviewResolverService _previews;
     private readonly ILogger<NovaRequestDispatcher> _log;
 
     private static readonly JsonSerializerOptions JsonOptions =
@@ -25,12 +26,14 @@ public sealed class NovaRequestDispatcher
         MeshResolverService meshes,
         AssetInspectorService inspector,
         TextureService textures,
+        PreviewResolverService previews,
         ILogger<NovaRequestDispatcher> log)
     {
         _provider = provider;
         _meshes = meshes;
         _inspector = inspector;
         _textures = textures;
+        _previews = previews;
         _log = log;
     }
 
@@ -68,6 +71,11 @@ public sealed class NovaRequestDispatcher
 
                 ("GET", "/v1/resolve") =>
                     await ResolveAsync(
+                        GetAssetPath(query),
+                        cancellationToken),
+
+                ("GET", "/v1/preview") =>
+                    await PreviewAsync(
                         GetAssetPath(query),
                         cancellationToken),
 
@@ -165,6 +173,7 @@ public sealed class NovaRequestDispatcher
             textureCacheEntries =
                 _textures.CacheEntries,
             universalMeshPreview = true,
+            universalPreviewPlan = true,
             staticMesh = true,
             skeletalMesh = true,
             inspector = "universal-uobject-metadata-v1"
@@ -272,6 +281,25 @@ public sealed class NovaRequestDispatcher
         return Json(
             200,
             inspection);
+    }
+
+    private async Task<DispatchResponse> PreviewAsync(
+        string rawPath,
+        CancellationToken cancellationToken)
+    {
+        using var timeout =
+            CreateTimeout(
+                cancellationToken,
+                TimeSpan.FromMinutes(2));
+
+        var preview =
+            await _previews.ResolveAsync(
+                rawPath,
+                timeout.Token);
+
+        return Json(
+            200,
+            preview);
     }
 
     private async Task<DispatchResponse> ReferencesAsync(
@@ -456,3 +484,4 @@ public sealed class NovaRequestDispatcher
                     JsonOptions));
     }
 }
+
